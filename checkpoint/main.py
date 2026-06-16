@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import argparse
+import logging
 
 from config import Config
+from logging_config import setup_logging
 from trainer import Trainer
 from evaluator import Evaluator
+
+logger = logging.getLogger(__name__)
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
@@ -26,7 +30,7 @@ def parse_args() -> argparse.Namespace:
         help="Path to a .pt checkpoint to resume training or load for eval.",
     )
 
-    # Allow quick overrides without editing config.py
+    # Allow quick overrides without editing config.py for convenience
     p.add_argument("--epochs", type=int, default=None)
     p.add_argument("--steps_per_epoch", type=int, default=None)
     p.add_argument("--lr",  type=float, default=None)
@@ -50,11 +54,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    setup_logging()
     args = parse_args()
 
-    # build config and apply any overrides
+    # Build config and override with any command-line args provided
     config = Config()
-
     if args.epochs is not None: config.epochs = args.epochs
     if args.steps_per_epoch is not None: config.steps_per_epoch  = args.steps_per_epoch
     if args.lr is not None: config.learning_rate = args.lr
@@ -74,41 +78,41 @@ def main() -> None:
     if args.dataset_size is not None: config.dataset_size = args.dataset_size
     if args.device is not None: config.device = args.device
     
-    # recalculate steps based on updated dataset size (in case of overrode)
+    # In case of override, recalculate steps_per_epoch and eval_steps
     if args.dataset_size is not None:
         train_size = int(config.dataset_size * config.hf_train_split_ratio)
         config.steps_per_epoch = train_size // config.epochs
         eval_partition_ratio = 1.0 - config.hf_train_split_ratio
         config.eval_steps = int(config.dataset_size * eval_partition_ratio)
 
-    print("#######################################################")
-    print("  Adversarial Perturbation Network — YOLOv8n Target")
-    print("#######################################################")
-    print(f"  Mode:              {args.mode}")
-    print(f"  Device:            {config.device}")
-    print(f"  Dataset:           {config.hf_dataset_name}")
-    print(f"  HF Config:         {config.hf_config_name}")
-    print(f"  Total dataset:     {config.dataset_size:,} images")
-    print(f"  Data split:        {config.hf_train_split_ratio:.1%} train ({int(config.dataset_size*config.hf_train_split_ratio):,}) / {1-config.hf_train_split_ratio:.1%} eval ({int(config.dataset_size*(1-config.hf_train_split_ratio)):,})")
-    print(f"  Epochs:            {config.epochs}")
-    print(f"  Steps/epoch:       {config.steps_per_epoch:,}")
-    print(f"  Total train steps: {config.epochs * config.steps_per_epoch:,}")
-    print(f"  Learning rate:     {config.learning_rate}")
-    print(f"  Epsilon (L-inf):   {config.epsilon:.5f}  ({config.epsilon*255:.1f}/255)")
-    print(f"  λ_recon:           {config.lambda_recon}")
-    print(f"  λ_tv:              {config.lambda_tv}")
+    logger.info("=" * 60)
+    logger.info("    Adversarial Perturbation Network")
+    logger.info("=" * 60)
+    logger.info(f"Mode: {args.mode}")
+    logger.info(f"Device: {config.device}")
+    logger.info(f"Dataset: {config.hf_dataset_name}")
+    logger.info(f"HF Config: {config.hf_config_name}")
+    logger.info(f"Total dataset: {config.dataset_size:,} images")
+    logger.info(f"Data split: {config.hf_train_split_ratio:.1%} train ({int(config.dataset_size*config.hf_train_split_ratio):,}) / {1-config.hf_train_split_ratio:.1%} eval ({int(config.dataset_size*(1-config.hf_train_split_ratio)):,})")
+    logger.info(f"Epochs: {config.epochs}")
+    logger.info(f"Steps/epoch: {config.steps_per_epoch:,}")
+    logger.info(f"Total train steps: {config.epochs * config.steps_per_epoch:,}")
+    logger.info(f"Learning rate: {config.learning_rate}")
+    logger.info(f"Epsilon: {config.epsilon:.5f}  ({config.epsilon*255:.1f}/255)")
+    logger.info(f"lambda_recon: {config.lambda_recon}")
+    logger.info(f"lambda_tv: {config.lambda_tv}")
     if config.use_adaptive_lambdas:
-        print(f"  Adaptive lambdas:  enabled (threshold: {config.det_loss_threshold})")
-        print(f"    λ_recon_max:    {config.lambda_recon_max}")
-        print(f"    λ_tv_max:       {config.lambda_tv_max}")
-    print(f"  UNet base_ch:      {config.unet_base_channels}")
-    print("=" * 60 + "\n")
+        logger.info(f"Adaptive lambdas: enabled (threshold: {config.det_loss_threshold})")
+        logger.info(f"  lambda_recon_max {config.lambda_recon_max}")
+        logger.info(f"  lambda_tv_max: {config.lambda_tv_max}")
+    logger.info(f"UNet base_ch: {config.unet_base_channels}")
+    logger.info("=" * 60)
 
     if args.mode in ("train", "both"):
         trainer = Trainer(config=config, resume_from=args.resume)
         trainer.train()
 
-        # after training, point eval at the latest checkpoint
+        # After training, use the latest checkpoint for evaluation
         latest_ckpt = sorted(config.checkpoint_dir.glob("*.pt"))[-1]
         resume_for_eval = latest_ckpt
     else:

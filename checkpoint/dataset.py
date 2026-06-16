@@ -12,13 +12,20 @@ from config import Config, cfg
 def _to_tensor(image: Image.Image, size: int) -> torch.Tensor:
     """
     Convert a PIL image to a (1, 3, size, size) float32 tensor in [0, 1].
+
+    Args:
+        image: A PIL Image.
+        size: The desired output size (height and width) for the tensor.
+    
+    Returns:
+        A torch.Tensor of shape (1, 3, size, size) with pixel values normalized to [0, 1].
     """
     if image.mode != "RGB":
         image = image.convert("RGB")
 
     image = TF.resize(image, [size, size])
-    tensor = TF.to_tensor(image)          # (3, H, W), [0, 1]
-    return tensor.unsqueeze(0)            # (1, 3, H, W)
+    tensor = TF.to_tensor(image) # (3, H, W), [0, 1]
+    return tensor.unsqueeze(0) # (1, 3, H, W)
 
 
 def _iter_hf_images(
@@ -31,8 +38,19 @@ def _iter_hf_images(
     image_key: str = "image",
 ) -> Iterator[torch.Tensor]:
     """
-    Generator over a HuggingFace streaming dataset,
-     so training can request any number of steps.
+    Generator over a HuggingFace streaming dataset, so training can request any number of steps.
+
+    Args:
+        dataset_name: The name of the HuggingFace dataset to load.
+        config_name: The config name for the dataset (e.g., "base_transforms").
+        split: The dataset split to use (e.g., "train", "validation").
+        image_size: The size to which images should be resized (e.g., 256).
+        split_type: "train" or "eval", determines how the dataset is partitioned.
+        split_ratio: The ratio of the dataset to use for training (e.g., 0.8 means 80% train, 20% eval).
+        image_key: The key in the dataset sample that contains the image (default: "image").
+    
+    Yields:
+        An infinite stream of image tensors of shape (1, 3, image_size, image_size) in [0, 1].
     """
     split_threshold = int(1.0 / (1.0 - split_ratio)) if split_ratio < 1.0 else 1
     
@@ -47,7 +65,7 @@ def _iter_hf_images(
         for sample in stream:
             if split_type == "train":
                 use_sample = (idx % split_threshold) < split_threshold - 1
-            else:  # eval
+            else:  # Eval
                 use_sample = (idx % split_threshold) == (split_threshold - 1)
             
             idx += 1
@@ -75,6 +93,14 @@ def build_stream(
 ) -> Iterator[torch.Tensor]:
     """
     Return an infinite iterator of (1, 3, H, W) image tensors.
+
+    Args:
+        config: The configuration object containing dataset parameters.
+        split: Optional dataset split to use (overrides config.hf_split if provided).
+        split_type: "train" or "eval", determines how the dataset is partitioned.
+    
+    Returns:
+        Iterator[torch.Tensor]: An infinite stream of image tensors.
     """
     return _iter_hf_images(
         dataset_name=config.hf_dataset_name,

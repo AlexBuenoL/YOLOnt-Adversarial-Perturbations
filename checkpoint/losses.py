@@ -6,7 +6,6 @@ import torchvision.transforms.functional as TF
 
 from config import Config, cfg
 
-# -- loss components --
 
 def detection_loss(
     raw_yolo_output: torch.Tensor,
@@ -15,12 +14,19 @@ def detection_loss(
 ) -> torch.Tensor:
     """
     Reduces person detections by minimizing the top-k class confidence scores.
-    """
-    # raw_yolo_output: (1, 84, 8400)
-    # Channel layout: [cx, cy, w, h, cls_0, cls_1, ..., cls_79]
-    person_scores = raw_yolo_output[:, 4 + target_class_id, :]  # (1, 8400)
 
-    # take the top-k and average them
+    Args:
+        raw_yolo_output: The raw output tensor from YOLO.
+        target_class_id: The class ID to target (e.g., 0 for person in COCO).
+        topk: The number of top detection scores to consider for the loss.
+
+    Returns:
+        A scalar tensor representing the detection loss.
+    """
+    person_scores = raw_yolo_output[:, 4 + target_class_id, :]
+
+    # Take the mean of the top-k highest person confidence scores as the loss.
+    # TODO: We could also experiment with sum or maximum instead of mean.
     k = min(topk, person_scores.numel())
     topk_scores = torch.topk(person_scores.flatten(), k=k).values
 
@@ -32,12 +38,25 @@ def reconstruction_loss(
 ) -> torch.Tensor:
     """
     Pixel-wise MSE between the adversarial image and the original.
+
+    Args:
+        adv_image: The adversarially perturbed image tensor.
+        orig_image: The original image tensor.
+    
+    Returns:
+        A scalar tensor representing the reconstruction loss.
     """
     return F.mse_loss(adv_image, orig_image)
 
 def total_variation_loss(perturbation: torch.Tensor) -> torch.Tensor:
     """
     Total variation of the perturbation tensor
+
+    Args:
+        perturbation: The perturbation tensor output by the UNet (B, 3, H, W)
+    
+    Returns:
+        A scalar tensor representing the total variation loss.
     """
     diff_h = torch.abs(perturbation[:, :, :-1, :] - perturbation[:, :, 1:, :])
     diff_w = torch.abs(perturbation[:, :, :, :-1] - perturbation[:, :, :, 1:])
@@ -45,7 +64,7 @@ def total_variation_loss(perturbation: torch.Tensor) -> torch.Tensor:
 
 
 
-# -- YOLO input preprocessing --
+# YOLO input preprocessing
 
 def preprocess_for_yolo(
     image_tensor: torch.Tensor,
@@ -63,17 +82,16 @@ def preprocess_for_yolo(
     )
 
 
-# -- combined loss --
+# Combined loss class
 
 class AdversarialLoss:
     """
     Aggregates the three loss components.
 
-    Supports adaptive lambda scheduling: when detection loss gets small,
-    the model automatically focuses on reconstruction and smoothness.
+    Supports adaptive lambda scheduling.
     """
 
-    def __init__(self, config: Config = cfg):
+    def __init__(self, config: Config = cfg) -> None:
         self.cfg = config
 
     def _compute_adaptive_lambdas(self, l_det: float) -> tuple[float, float]:
@@ -86,12 +104,10 @@ class AdversarialLoss:
         if not self.cfg.use_adaptive_lambdas or l_det >= self.cfg.det_loss_threshold:
             return self.cfg.lambda_recon, self.cfg.lambda_tv
         
-        # when det_loss is below threshold, increase recon/tv weight
         progress = 1.0 - (l_det / self.cfg.det_loss_threshold)
-        progress = min(1.0, max(0.0, progress))  # clamp to [0, 1]
+        progress = min(1.0, max(0.0, progress))
         
-        # exponential interpolation for smoother transition
-        progress = progress ** 2  # squared for smoother curve
+        progress = progress ** 2
         
         lambda_recon_adaptive = self.cfg.lambda_recon + (self.cfg.lambda_recon_max - self.cfg.lambda_recon) * progress
         lambda_tv_adaptive = self.cfg.lambda_tv + (self.cfg.lambda_tv_max - self.cfg.lambda_tv) * progress
@@ -107,6 +123,15 @@ class AdversarialLoss:
     ) -> tuple[torch.Tensor, dict[str, float]]:
         """
         Compute and return the total loss plus a loggable info.
+
+        Args:
+            raw_yolo_output: The raw YOLO output tensor.
+            adv_image: The adversarially perturbed image tensor.
+            orig_image: The original image tensor.
+            perturbation: The perturbation tensor output by the UNet.
+
+        Returns:
+            A tuple containing the total loss and a dictionary of loss components.
         """
         l_det = detection_loss(
             raw_yolo_output,
@@ -116,22 +141,21 @@ class AdversarialLoss:
         l_recon = reconstruction_loss(adv_image, orig_image)
         l_tv    = total_variation_loss(perturbation)
         
-        # compute adaptive lambdas
         lambda_recon_adaptive, lambda_tv_adaptive = self._compute_adaptive_lambdas(l_det.item())
 
         total = (
             l_det
             + lambda_recon_adaptive * l_recon
-            + lambda_tv_adaptive    * l_tv
+            + lambda_tv_adaptive * l_tv
         )
 
         breakdown = {
-            "det":   l_det.item(),
+            "det": l_det.item(),
             "recon": l_recon.item(),
-            "tv":    l_tv.item(),
+            "tv": l_tv.item(),
             "total": total.item(),
             "lambda_recon": lambda_recon_adaptive,
-            "lambda_tv":    lambda_tv_adaptive,
+            "lambda_tv": lambda_tv_adaptive,
         }
 
         return total, breakdown

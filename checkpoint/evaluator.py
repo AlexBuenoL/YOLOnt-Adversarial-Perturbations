@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import math
 from datetime import datetime
 from pathlib import Path
@@ -13,11 +14,22 @@ from config import Config, cfg
 from dataset import build_stream
 from model import build_perturbation_net
 
+logger = logging.getLogger(__name__)
 
-# -- perceptual quality helpers --
+
+# Helpers
 
 def psnr(original: torch.Tensor, adversarial: torch.Tensor) -> float:
-    """Peak signal-to-Noise ratio in dB (higher = less distortion)."""
+    """
+    Peak signal-to-Noise ratio in dB (higher = less distortion).
+    
+    Args:
+        original: The original image tensor.
+        adversarial: The adversarial image tensor.
+        
+    Returns:
+        PSNR value in decibels.
+    """
     mse = F.mse_loss(adversarial, original).item()
     if mse == 0:
         return float("inf")
@@ -33,6 +45,16 @@ def ssim(
     """
     Simplified single-scale SSIM (averaged over channels).
     Returns a value in [-1, 1]; values close to 1 = almost identical.
+
+    Args:
+        original: The original image tensor.
+        adversarial: The adversarial image tensor.
+        window_size: The size of the Gaussian window for local statistics.
+        C1: Stability constant to avoid division by zero.
+        C2: Stability constant to avoid division by zero.
+
+    Returns:
+        SSIM value (float).
     """
     mu1 = F.avg_pool2d(original, window_size, stride=1, padding=window_size // 2)
     mu2 = F.avg_pool2d(adversarial, window_size, stride=1, padding=window_size // 2)
@@ -51,26 +73,25 @@ def ssim(
     return (numerator / (denominator + 1e-8)).mean().item()
 
 
-# -- YOLO helpers --
-
-def _max_person_confidence(result) -> float:
+def _max_confidence_for_class(results, class_id: int) -> float:
     """
-    Extract the highest person-class confidence from a YOLO result object.
-    Returns 0.0 if no person detected.
+    Extract maximum confidence for a specific class from YOLO results.
+    
+    Args:
+        results: YOLO result object for a single image.
+        class_id: The class ID to check confidence for (e.g. 0 for person in COCO).
+    
+    Returns:
+        The maximum confidence score for the specified class, or 0.0 if not detected.
     """
-    boxes = result.boxes
-    if boxes is None or len(boxes) == 0:
+    if results.boxes is None or len(results.boxes) == 0:
         return 0.0
-
-    person_confs = [
-        float(b.conf[0].item())
-        for b in boxes
-        if int(b.cls[0].item()) == 0
-    ]
-    return max(person_confs) if person_confs else 0.0
-
-def _has_person_detection(result) -> bool:
-    return _max_person_confidence(result) > 0.0
+    
+    class_boxes = results.boxes[results.boxes.cls == class_id]
+    if len(class_boxes) == 0:
+        return 0.0
+    
+    return float(class_boxes.conf.max().item())
 
 
 # -- evaluator --
@@ -87,22 +108,19 @@ class Evaluator:
         self.cfg    = config
         self.device = torch.device(config.device)
 
-        # perturbation network
         self.net = build_perturbation_net(config).to(self.device)
 
         if checkpoint_path is not None:
             ckpt = torch.load(Path(checkpoint_path), map_location=self.device)
             self.net.load_state_dict(ckpt["model_state_dict"])
-            print(f"[evaluator] Loaded checkpoint: {checkpoint_path}")
+            logger.info(f"Checkpoint loaded: {checkpoint_path}")
         else:
-            print("[evaluator] No checkpoint provided --> using random weights.")
+            logger.info("No checkpoint provided; using random weights.")
 
         self.net.eval()
 
-        # YOLO (wrapper for easy result parsing)
         self.yolo = YOLO(config.yolo_weights)
 
-        # data stream --> use eval split
         self.stream = build_stream(config, split_type="eval")
 
     @torch.no_grad()
@@ -112,6 +130,12 @@ class Evaluator:
         """
         Evaluate one image.  
         Returns a dict of metrics per image.
+
+        Args:
+            orig_tensor: The original image tensor (C, H, W) in [0, 1].
+        
+        Returns:
+            dict: Dictionary containing metrics such as: psnr, ssim, original and adversarial confidence scores, etc.
         """
         adv_tensor, _ = self.net(orig_tensor)
 
@@ -136,12 +160,12 @@ class Evaluator:
         orig_results = self.yolo(orig_np, verbose=False)
         adv_results = self.yolo(adv_np, verbose=False)
 
-        orig_conf = _max_person_confidence(orig_results[0])
-        adv_conf = _max_person_confidence(adv_results[0])
+        orig_conf = _max_confidence_for_class(orig_results[0], class_id=0)
+        adv_conf = _max_confidence_for_class(adv_results[0], class_id=0)
 
         return {
-            "orig_has_person": _has_person_detection(orig_results[0]),
-            "adv_has_person": _has_person_detection(adv_results[0]),
+            "orig_has_person": _max_confidence_for_class(orig_results[0], class_id=0) > 0.0,
+            "adv_has_person": _max_confidence_for_class(adv_results[0], class_id=0) > 0.0,
             "orig_conf": orig_conf,
             "adv_conf": adv_conf,
             "conf_drop": orig_conf - adv_conf,
@@ -152,12 +176,18 @@ class Evaluator:
     def run(self, steps: int | None = None, transformation: Callable = None) -> dict:
         """
         Run evaluation over `steps` images.
+
+        Args:
+            steps: Number of images to evaluate. If None, uses config.eval_steps.
+
+        Returns:
+            dict: Summary of evaluation metrics across all processed images.
         """
         n = steps or self.cfg.eval_steps
 
-        print(f"\n[evaluator] Processing {n} images from eval partition...\n")
+        logger.info(f"Processing {n} images from eval partition...")
 
-        # only count images where YOLO originally detects a person
+        # Only count images where YOLO detects a person
         valid = 0
         suppressed = 0
         total_conf_drop = 0.0
@@ -181,10 +211,10 @@ class Evaluator:
             total_ssim += m["ssim"]
 
             if (i + 1) % 50 == 0:
-                print(f"  Processed {i+1}/{n} | valid so far: {valid}")
+                logger.info(f"Processed {i+1}/{n} | valid so far: {valid}")
 
         if valid == 0:
-            print("[evaluator] No valid images found (YOLO detected no persons).")
+            logger.warning("No valid images found (YOLO detected no persons).")
             return {}
 
         summary = {
@@ -195,10 +225,8 @@ class Evaluator:
             "mean_ssim": total_ssim / valid,
         }
 
-        # format output message
+        # Log results in a nice format
         output_lines = [
-            "\n" + "=" * 50,
-            "EVALUATION SUMMARY",
             "=" * 50,
             f"  Valid images (orig. had person): {summary['valid_images']}",
             f"  Suppression rate: {summary['suppression_rate']*100:.1f}%",
@@ -207,18 +235,16 @@ class Evaluator:
             f"  Mean SSIM: {summary['mean_ssim']:.4f}  (1.0 = identical)",
             "=" * 50 + "\n",
         ]
-        
-        # print to stdout
         for line in output_lines:
-            print(line)
+            logger.info(line)
         
-        # save to file with timestamp
+        # Save results to a file with timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_file = self.cfg.sample_dir / f"eval_summary_{timestamp}.txt"
         with open(output_file, "w") as f:
             for line in output_lines:
                 f.write(line + "\n")
         
-        print(f"[evaluator] Results saved to -> {output_file}")
+        logger.info(f"Results saved to {output_file}")
 
         return summary

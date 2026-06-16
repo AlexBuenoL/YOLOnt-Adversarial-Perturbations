@@ -3,6 +3,7 @@ from __future__ import annotations
 import math
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 import torch
 import torch.nn.functional as F
@@ -106,13 +107,17 @@ class Evaluator:
 
     @torch.no_grad()
     def _evaluate_single(
-        self, orig_tensor: torch.Tensor
+        self, orig_tensor: torch.Tensor, transformation: Callable = None
     ) -> dict:
         """
         Evaluate one image.  
         Returns a dict of metrics per image.
         """
         adv_tensor, _ = self.net(orig_tensor)
+
+        # apply optional post-perturbation transformation to adversarial tensor
+        if transformation:
+            adv_tensor = transformation(adv_tensor)
 
         # convert tensors to numpy uint8 for YOLO inference
         def to_numpy(t):
@@ -144,7 +149,7 @@ class Evaluator:
             "ssim": ssim(orig_tensor, adv_tensor),
         }
 
-    def run(self, steps: int | None = None) -> dict:
+    def run(self, steps: int | None = None, transformation: Callable = None) -> dict:
         """
         Run evaluation over `steps` images.
         """
@@ -161,7 +166,7 @@ class Evaluator:
 
         for i in range(n):
             img = next(self.stream).to(self.device)
-            m   = self._evaluate_single(img)
+            m   = self._evaluate_single(img, transformation=transformation)
 
             if not m["orig_has_person"]:
                 continue
@@ -196,10 +201,10 @@ class Evaluator:
             "EVALUATION SUMMARY",
             "=" * 50,
             f"  Valid images (orig. had person): {summary['valid_images']}",
-            f"  Suppression rate:                {summary['suppression_rate']*100:.1f}%",
-            f"  Mean confidence drop:            {summary['mean_conf_drop']:.4f}",
-            f"  Mean PSNR (dB):                  {summary['mean_psnr_db']:.2f}  (>35 = imperceptible)",
-            f"  Mean SSIM:                       {summary['mean_ssim']:.4f}  (1.0 = identical)",
+            f"  Suppression rate: {summary['suppression_rate']*100:.1f}%",
+            f"  Mean confidence drop: {summary['mean_conf_drop']:.4f}",
+            f"  Mean PSNR (dB): {summary['mean_psnr_db']:.2f}  (>35 = imperceptible)",
+            f"  Mean SSIM: {summary['mean_ssim']:.4f}  (1.0 = identical)",
             "=" * 50 + "\n",
         ]
         

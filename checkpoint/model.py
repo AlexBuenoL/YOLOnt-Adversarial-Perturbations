@@ -48,9 +48,9 @@ class PerturbationUNet(nn.Module):
         self.bottleneck = self._conv_block(c * 4, c * 8)  # (4c) -> (8c)
 
         # Decoder
-        self.up3, self.dec3 = self._up(c * 8, c * 4) # (8c) -> (4c)
-        self.up2, self.dec2 = self._up(c * 4, c * 2) # (4c) -> (2c)
-        self.up1, self.dec1 = self._up(c * 2, c) # (2c) -> (c)
+        self.up3, self.dec3 = self._up(c * 12, c * 4) # (8c) -> (4c)
+        self.up2, self.dec2 = self._up(c * 6, c * 2) # (4c) -> (2c)
+        self.up1, self.dec1 = self._up(c * 3, c) # (2c) -> (c)
 
         # Output projection to RGB perturbation
         self.head = nn.Conv2d(c, 3, kernel_size=1)  # (c) -> (3)

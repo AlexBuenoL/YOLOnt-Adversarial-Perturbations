@@ -5,6 +5,7 @@ import math
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
+from tqdm import tqdm
 
 import torch
 import torch.nn.functional as F
@@ -93,6 +94,32 @@ def _max_confidence_for_class(results, class_id: int) -> float:
     
     return float(class_boxes.conf.max().item())
 
+def has_person_detection(results, class_id: int = 0, threshold: float = 0.25) -> bool:
+    """
+    Determines whether a YOLO result contains a valid detection for a given class.
+
+    A detection is considered valid if at least one bounding box of the target class
+    has a confidence score greater than or equal to the threshold.
+
+    Args:
+        results: YOLO prediction result for a single image.
+        class_id: Target class ID (0 = person in COCO).
+        threshold: Confidence threshold for valid detection.
+
+    Returns:
+        True if at least one detection exists above threshold, else False.
+    """
+
+    if results.boxes is None or len(results.boxes) == 0:
+        return False
+
+    class_mask = results.boxes.cls == class_id
+    class_boxes = results.boxes[class_mask]
+
+    if len(class_boxes) == 0:
+        return False
+
+    return (class_boxes.conf >= threshold).any().item()
 
 # -- evaluator --
 
@@ -164,8 +191,8 @@ class Evaluator:
         adv_conf = _max_confidence_for_class(adv_results[0], class_id=0)
 
         return {
-            "orig_has_person": _max_confidence_for_class(orig_results[0], class_id=0) > 0.0,
-            "adv_has_person": _max_confidence_for_class(adv_results[0], class_id=0) > 0.0,
+            "orig_has_person": has_person_detection(orig_results[0], class_id=0, threshold=0.25),
+            "adv_has_person": has_person_detection(adv_results[0], class_id=0, threshold=0.25),
             "orig_conf": orig_conf,
             "adv_conf": adv_conf,
             "conf_drop": orig_conf - adv_conf,
@@ -194,7 +221,7 @@ class Evaluator:
         total_psnr = 0.0
         total_ssim = 0.0
 
-        for i in range(n):
+        for i in tqdm(range(n), desc="Evaluating images"):
             img = next(self.stream).to(self.device)
             m   = self._evaluate_single(img, transformation=transformation)
 

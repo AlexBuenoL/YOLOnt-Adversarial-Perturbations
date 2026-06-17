@@ -1,5 +1,4 @@
 venv/*
 *.png
-*.pt
 checkpoint/__pycache__/*
 *.pyc

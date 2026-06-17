@@ -1,7 +1,0 @@
-Adversarial Textures: Evading YOLO Detection
-
-- Usar diferentes datasets para experimentación más robusta (un dataset para identificar personas, otro animales, uno en blanco y negro, etc)
-- Evaluar con diferentes modelos de YOLO (o otras arquitecturas) (entrenar solo con el small)
-- Para que la textura/patch no sea un bloque sólido:
-    - Usar Loss modificada: L_tot = L_adv + lambda1*L_smooth + lambda2*L_style
-    - Hacer que se entrenen, además de los valores del patch/textura, las dimensiones (alto y ancho) y la posición.

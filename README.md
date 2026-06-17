@@ -10,6 +10,10 @@ pip install -r requirements.txt
 
 The dataset is streamed from HuggingFace (`bitmind/MS-COCO-unique-256_training_faces`), no manual download needed. The YOLOv8 weights (`yolov8n.pt`) are included in the repo.
 
+## Usage
+
+All scripts are run from the project root directory. The main training and evaluation script is `src/main.py`. The other scripts are for testing robustness to JPEG compression and black & white conversion.
+
 ### Train + Evaluate
 
 ```bash
